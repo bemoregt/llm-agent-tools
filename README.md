@@ -79,9 +79,10 @@ ResNet18로 너구리 이미지 추론해줘
 
 ```
 octave-mcp/
-├── index.js          # MCP 서버 진입점
+├── index.js                      # MCP 서버 진입점
 ├── package.json
-├── outputs/          # 생성된 그래프·이미지 저장 디렉토리
+├── resnet18_raccoon_result.png   # ResNet18 추론 결과 이미지
+├── outputs/                      # 생성된 그래프·이미지 저장 디렉토리
 │   ├── plot_<uuid>.png
 │   └── resnet18_raccoon_result.png
 └── README.md
@@ -119,6 +120,22 @@ img_rec = real(ifft2(ifftshift(F_shifted)));
 [status, out] = system('python3 /tmp/resnet_infer.py 2>&1');
 % Top1: badger 35.59% / Top2: grey fox 17.83% ...
 ```
+
+---
+
+## 추론 결과 예시
+
+![ResNet18 Raccoon Inference](resnet18_raccoon_result.png)
+
+| 순위 | 클래스 | 확률 |
+|------|--------|------|
+| Top1 | badger (오소리) | 35.59% |
+| Top2 | grey fox (회색여우) | 17.83% |
+| Top3 | lesser panda (레서판다) | 8.63% |
+| Top4 | three-toed sloth (나무늘보) | 7.69% |
+| Top5 | Madagascar cat | 2.45% |
+
+> ImageNet-1K에 raccoon 클래스가 없어 유사 동물인 badger로 분류됩니다.
 
 ---
 
