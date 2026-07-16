@@ -1,0 +1,22 @@
+model: ollama:gemma4:cloud
+clients:
+  - type: openai-compatible
+    name: ollama
+    api_base: http://localhost:11434/v1
+    api_key: ollama
+    models:
+      - name: gemma4:cloud
+        max_input_tokens: 128000
+      - name: qwen3-vl:4b-instruct
+        max_input_tokens: 128000
+        supports_vision: true
+      - name: nomic-embed-text
+        type: embedding
+        default_chunk_size: 1500
+        max_batch_size: 50
+
+rag_embedding_model: ollama:nomic-embed-text
+rag_reranker_model: ~
+rag_top_k: 5
+rag_chunk_size: 1500
+rag_chunk_overlap: 100
