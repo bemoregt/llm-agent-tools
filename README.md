@@ -2,6 +2,13 @@
 
 Obsidian 볼트를 지식 저장소로 쓰고, 로컬 LLM(Ollama)과 RAG로 그 지식에 대해 질문/분석할 수 있게 만든 개인용 시스템입니다. 전부 로컬에서 동작하며 외부 API 키가 필요 없습니다.
 
+## 스크린샷
+
+| 지식 추가 웹 폼 | RAG 채팅 플레이그라운드 |
+|---|---|
+| ![지식 추가 웹 폼](screenshot-web-input.png) | ![RAG 채팅 플레이그라운드](screenshot-chat-playground.png) |
+| GitHub 저장소 분석 / PDF 논문 업로드 | `jungok-wiki` RAG로 GFNet에 대해 질문한 예시 |
+
 ## 구성 요소
 
 | 구성 요소 | 역할 | 위치 |
