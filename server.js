@@ -9,6 +9,7 @@ const RSSParser = require('rss-parser');
 const wiki = require('./lib/wiki');
 const ollama = require('./lib/ollama');
 const video = require('./lib/video');
+const musicgen = require('./lib/musicgen');
 const arxiv = require('./lib/arxiv');
 const youtube = require('./lib/youtube');
 const codetest = require('./lib/codetest');
@@ -112,7 +113,7 @@ const uploadStorage = multer.diskStorage({
     cb(null, candidate);
   },
 });
-const UPLOAD_MAX_BYTES = 500 * 1024 * 1024;
+const UPLOAD_MAX_BYTES = 1.5 * 1024 * 1024 * 1024;
 const upload = multer({ storage: uploadStorage, limits: { fileSize: UPLOAD_MAX_BYTES } });
 
 app.use('/uploads', express.static(UPLOAD_DIR));
@@ -1397,6 +1398,56 @@ app.post('/page/:name/make-shorts', requireIndexAuth, async (req, res) => {
     res.status(500).json({ error: err.message });
   } finally {
     fs.rmSync(source.workDir, { recursive: true, force: true });
+  }
+});
+
+// "배경음악 넣기": if the page links to an uploaded silent video (no audio
+// track), asks Ollama for an English music-style description of the page's
+// content, generates a matching instrumental clip locally with MusicGen
+// (lib/musicgen.js, running in tts_env), loops/trims it to the video's own
+// length (lib/video.js's muxLoopedAudio), and appends the result as a new
+// mp4 to the page.
+app.post('/page/:name/add-bgm', requireIndexAuth, async (req, res) => {
+  const { name } = req.params;
+  if (!wiki.pageExists(name)) return res.status(404).json({ error: 'page not found' });
+
+  const { body } = wiki.readPage(name);
+  const vid = video.findVideo(body, UPLOAD_DIR);
+  if (!vid) {
+    return res
+      .status(400)
+      .json({ error: '이 문서에서 첨부된 동영상을 찾지 못했습니다. 소리 없는 동영상을 먼저 업로드해서 문서에 링크해주세요.' });
+  }
+
+  let workDir;
+  try {
+    if (await video.hasAudioStream(vid.abs)) {
+      return res.status(400).json({ error: '이 동영상에는 이미 오디오 트랙이 있습니다. 소리 없는 동영상만 지원합니다.' });
+    }
+
+    const duration = await video.getAudioDuration(vid.abs);
+    const musicPrompt = await ollama.generateMusicStylePrompt(name, body.slice(0, 4000));
+
+    workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'o2s-bgm-'));
+    const musicPath = path.join(workDir, 'music.wav');
+    await musicgen.generateMusic({ prompt: musicPrompt, duration, outPath: musicPath });
+
+    const outFilename = `${wiki.sanitizeName(name)}-bgm-${Date.now()}.mp4`;
+    const outPath = path.join(UPLOAD_DIR, outFilename);
+    await video.muxLoopedAudio({ videoPath: vid.abs, audioPath: musicPath, outPath });
+
+    const snippet =
+      `\n## \u{1F3B5} 배경음악 추가된 영상\n\n` +
+      `[${outFilename}](/uploads/${encodeURIComponent(outFilename)})\n\n` +
+      `- 음악 스타일: ${musicPrompt.replace(/\s+/g, ' ').trim()}\n`;
+    appendToPage(name, snippet);
+
+    res.json({ ok: true, videoUrl: `/uploads/${encodeURIComponent(outFilename)}`, musicPrompt });
+  } catch (err) {
+    console.error('[add-bgm] error', err);
+    res.status(err.status || 500).json({ error: err.message });
+  } finally {
+    if (workDir) fs.rmSync(workDir, { recursive: true, force: true });
   }
 });
 
