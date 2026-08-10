@@ -15,6 +15,7 @@ const youtube = require('./lib/youtube');
 const codetest = require('./lib/codetest');
 const notebook = require('./lib/notebook');
 const kernel = require('./lib/kernel');
+const screenshot = require('./lib/screenshot');
 
 const rssParser = new RSSParser();
 
@@ -495,6 +496,37 @@ function uniqueUploadFilename(desiredName) {
   }
   return candidate;
 }
+
+// "비구름 사진 첨부하기": headlessly captures Windy.com's rain-radar view
+// (lib/screenshot.js, driving the Brave install already on this Mac) and
+// uploads it to the page as a new image, timestamped so repeated clicks
+// build up a history of snapshots over time rather than overwriting the
+// last one - unlike the regenerate-in-place features above, "what did the
+// rain radar look like right now" is inherently a point-in-time fact worth
+// keeping each time, not a single fresh-per-click result.
+app.post('/page/:name/rain-photo', async (req, res) => {
+  try {
+    const { name } = req.params;
+    if (!wiki.pageExists(name)) return res.status(404).json({ error: 'page not found' });
+
+    const buf = await screenshot.captureWindyRain();
+
+    const stamp = new Date()
+      .toLocaleString('sv-SE', { timeZone: 'Asia/Seoul' })
+      .replace(/[: ]/g, '-');
+    const filename = uniqueUploadFilename(`rain-${stamp}.png`);
+    fs.writeFileSync(path.join(UPLOAD_DIR, filename), buf);
+
+    const caption = new Date().toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' });
+    const snippet = `\n![${filename}](/uploads/${encodeURIComponent(filename)})\n- ☁️ 비 구름 (windy.com, ${caption} 기준)\n`;
+    appendToPage(name, snippet);
+
+    res.json({ ok: true, filename });
+  } catch (err) {
+    console.error('[rain-photo] error', err);
+    res.status(500).json({ error: '비구름 사진을 가져오지 못했습니다: ' + err.message });
+  }
+});
 
 // "키워드로 최신 arXiv 논문 찾기" (1개월 / 1주일): unlike the job/RSS search
 // buttons, this one has a real, structured, date-filterable API to call
