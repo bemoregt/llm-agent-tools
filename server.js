@@ -528,6 +528,62 @@ app.post('/page/:name/rain-photo', async (req, res) => {
   }
 });
 
+// Matches the first plain http(s) URL anywhere in a page's raw markdown -
+// whether typed bare, wrapped in a markdown link `[label](url)`, or inside
+// an image tag `![alt](url)` - stopping at the first character that can't
+// be part of a URL so it doesn't swallow the surrounding markdown syntax.
+function findFirstExternalUrl(body) {
+  const match = body.match(/https?:\/\/[^\s)\]"'<>]+/);
+  return match ? match[0] : null;
+}
+
+// "웹페이지 캡쳐": finds the first external link in the page, opens it
+// headlessly (lib/screenshot.js's captureFullPageScroll) and scrolls all the
+// way through it, screenshotting each viewport-sized step rather than one
+// giant stitched image. Like the rain-radar photo above, this is a
+// point-in-time capture of an external page's current state, so repeated
+// clicks append a new numbered set of images instead of overwriting the
+// last capture.
+app.post('/page/:name/web-capture', async (req, res) => {
+  try {
+    const { name } = req.params;
+    if (!wiki.pageExists(name)) return res.status(404).json({ error: 'page not found' });
+
+    const { body } = wiki.readPage(name);
+    const url = findFirstExternalUrl(body);
+    if (!url) {
+      return res.status(400).json({ error: '문서에서 캡쳐할 외부 링크(http/https)를 찾지 못했습니다.' });
+    }
+
+    const shots = await screenshot.captureFullPageScroll(url);
+    if (!shots.length) {
+      return res.status(500).json({ error: '페이지를 캡쳐하지 못했습니다.' });
+    }
+
+    const stamp = new Date()
+      .toLocaleString('sv-SE', { timeZone: 'Asia/Seoul' })
+      .replace(/[: ]/g, '-');
+    const filenames = shots.map((buf, i) => {
+      const filename = uniqueUploadFilename(`capture-${stamp}-${String(i + 1).padStart(2, '0')}.png`);
+      fs.writeFileSync(path.join(UPLOAD_DIR, filename), buf);
+      return filename;
+    });
+
+    const caption = new Date().toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' });
+    const imageLines = filenames.map((f) => `![${f}](/uploads/${encodeURIComponent(f)})`).join('\n');
+    const snippet =
+      `\n## \u{1F4F7} 웹페이지 캡쳐: ${url}\n\n` +
+      `${imageLines}\n` +
+      `- \u{1F4F7} 전체 페이지 캡쳐 (${filenames.length}장, ${caption} 기준)\n`;
+    appendToPage(name, snippet);
+
+    res.json({ ok: true, url, count: filenames.length, filenames });
+  } catch (err) {
+    console.error('[web-capture] error', err);
+    res.status(500).json({ error: '웹페이지를 캡쳐하지 못했습니다: ' + err.message });
+  }
+});
+
 // "키워드로 최신 arXiv 논문 찾기" (1개월 / 1주일): unlike the job/RSS search
 // buttons, this one has a real, structured, date-filterable API to call
 // (arXiv's own), so it's used directly rather than routing through a plain
