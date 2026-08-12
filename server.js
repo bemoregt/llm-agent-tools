@@ -7,6 +7,7 @@ const { execFileSync } = require('child_process');
 const multer = require('multer');
 const RSSParser = require('rss-parser');
 const wiki = require('./lib/wiki');
+const linkClicks = require('./lib/linkClicks');
 const ollama = require('./lib/ollama');
 const video = require('./lib/video');
 const musicgen = require('./lib/musicgen');
@@ -15,6 +16,7 @@ const youtube = require('./lib/youtube');
 const codetest = require('./lib/codetest');
 const notebook = require('./lib/notebook');
 const kernel = require('./lib/kernel');
+const vrml = require('./lib/vrml');
 const screenshot = require('./lib/screenshot');
 
 const rssParser = new RSSParser();
@@ -216,6 +218,28 @@ app.post('/page/:name', requireIndexAuth, (req, res) => {
   }
 
   res.redirect(`/page/${encodeURIComponent(finalName)}`);
+});
+
+// Fired on every click of an external bookmark link so the sidebar's
+// "북마크 정리" button has click-frequency data to sort by. Best-effort:
+// an invalid/missing url just gets a 400, nothing is queued or retried.
+app.post('/api/link-click', (req, res) => {
+  const url = req.body && req.body.url;
+  if (typeof url !== 'string' || !/^https?:\/\//i.test(url)) {
+    return res.status(400).json({ error: 'invalid url' });
+  }
+  const count = linkClicks.recordClick(url);
+  res.json({ ok: true, count });
+});
+
+// Rewrites a bookmark-style page so entries after the `__` divider are
+// sorted by click count (most-clicked first); the block above the divider
+// (e.g. the pinned 메일 links) is left untouched.
+app.post('/page/:name/reorder-bookmarks', requireIndexAuth, (req, res) => {
+  const { name } = req.params;
+  if (!wiki.pageExists(name)) return res.status(404).json({ error: 'page not found' });
+  const result = wiki.reorderBookmarksByClicks(name, linkClicks.getCounts());
+  res.json({ ok: true, reordered: result.reordered });
 });
 
 // Used by the sidebar file upload widget when viewing (not editing) a page -
@@ -496,6 +520,64 @@ function uniqueUploadFilename(desiredName) {
   }
   return candidate;
 }
+
+// "VRML 만들기": a plain regex/keyword parser could only ever recognize the 4
+// fixed shape words it was told about, so anything else (지구, 달, 사람, ...)
+// always fell through to the same default cube+floor scene no matter what
+// was actually written - reported by the user directly. Ollama now reads the
+// page's free-form text and maps it onto this app's fixed rendering
+// vocabulary (lib/ollama.js's generateVrmlScene: exactly box/sphere/cylinder/
+// cone, plain RGB colors, optional floor, optional sky gradient) - it does
+// NOT add textures or real orbital motion, since the WebGL viewer has no
+// such capability to map onto yet. Writes two files to /uploads - the .wrl
+// itself and a portable standalone -viewer.html copy - and links both; the
+// .wrl link additionally renders the same viewer live inline on this page
+// (see the `.wrl` branch in lib/wiki.js's inline()), regenerated fresh from
+// the JSON scene comment embedded in the .wrl on every page view.
+function rgbToHex(rgb) {
+  return '#' + rgb.map((v) => Math.round(Math.min(1, Math.max(0, v)) * 255).toString(16).padStart(2, '0')).join('');
+}
+
+app.post('/page/:name/vrml-generate', async (req, res) => {
+  try {
+    const { name } = req.params;
+    if (!wiki.pageExists(name)) return res.status(404).json({ error: 'page not found' });
+
+    const { body } = wiki.readPage(name);
+    // Strip this feature's own previous output section before asking the
+    // model to interpret the page - otherwise its own last summary line
+    // becomes part of what it's asked to re-interpret next time, drifting
+    // further from the user's actual written description on every click.
+    const sourceText = body.replace(/\n##\s+\u{1F9CA}\s+VRML\s+장면[\s\S]*?(?=\n##\s|$)/u, '');
+    const scene = await ollama.generateVrmlScene(name, sourceText.slice(0, 6000));
+
+    // Fixed, page-derived filenames (not uniqueUploadFilename) so re-running
+    // this on the same page overwrites its own previous .wrl/.html instead of
+    // piling up vrml-repro-test-1.wrl, -2.wrl, ... on every click.
+    const baseName = wiki.sanitizeName(name) || 'scene';
+    const wrlFilename = `${baseName}.wrl`;
+    const baseUrl = `${req.protocol}://${req.get('host')}`;
+    fs.writeFileSync(path.join(UPLOAD_DIR, wrlFilename), vrml.generateWrl(scene, baseUrl));
+
+    const viewerFilename = `${baseName}-viewer.html`;
+    fs.writeFileSync(path.join(UPLOAD_DIR, viewerFilename), vrml.generateViewerDocument(scene, name));
+
+    const shapeSummary = scene.shapes.map((s) => `${s.type}(${rgbToHex(s.color)})`).join(', ');
+    const snippet =
+      `\n## \u{1F9CA} VRML 장면\n\n` +
+      `- 물체 ${scene.shapes.length}개: ${shapeSummary}\n` +
+      `- 바닥: ${scene.floor ? '체크보드 있음' : '없음'}\n` +
+      `- 배경: ${scene.background ? '그러데이션 있음' : '기본'}\n\n` +
+      `[${wrlFilename}](/uploads/${encodeURIComponent(wrlFilename)})\n\n` +
+      `[${viewerFilename}](/uploads/${encodeURIComponent(viewerFilename)})\n`;
+    replaceSection(name, '\u{1F9CA} VRML 장면', snippet);
+
+    res.json({ ok: true, shapes: scene.shapes.length, wrlFilename, viewerFilename });
+  } catch (err) {
+    console.error('[vrml-generate] error', err);
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // "비구름 사진 첨부하기": headlessly captures Windy.com's rain-radar view
 // (lib/screenshot.js, driving the Brave install already on this Mac) and
@@ -1536,6 +1618,38 @@ app.post('/page/:name/add-bgm', requireIndexAuth, async (req, res) => {
     res.status(err.status || 500).json({ error: err.message });
   } finally {
     if (workDir) fs.rmSync(workDir, { recursive: true, force: true });
+  }
+});
+
+// "쇼츠영상 다운로드": if the page links to a YouTube (Shorts or regular)
+// video URL, downloads it locally via yt-dlp (lib/youtube.js) and appends it
+// to the page as a playable attachment - unlike make-shorts (which BUILDS a
+// new vertical video from an uploaded audio+PDF), this fetches an
+// already-published video as-is.
+app.post('/page/:name/download-shorts', requireIndexAuth, async (req, res) => {
+  const { name } = req.params;
+  if (!wiki.pageExists(name)) return res.status(404).json({ error: 'page not found' });
+
+  const { body } = wiki.readPage(name);
+  const url = youtube.findYoutubeUrl(body);
+  if (!url) {
+    return res
+      .status(400)
+      .json({ error: '첨부된 유튜브 쇼츠 링크를 찾지 못했습니다. 먼저 쇼츠 영상 링크를 문서에 추가해주세요.' });
+  }
+
+  try {
+    const outFilename = `${wiki.sanitizeName(name)}-shorts-dl-${Date.now()}.mp4`;
+    const outPath = path.join(UPLOAD_DIR, outFilename);
+    await youtube.downloadVideo(url, outPath);
+
+    const snippet = `\n## \u{1F4E5} 다운로드한 쇼츠 영상\n\n[${outFilename}](/uploads/${encodeURIComponent(outFilename)})\n`;
+    appendToPage(name, snippet);
+
+    res.json({ ok: true, videoUrl: `/uploads/${encodeURIComponent(outFilename)}` });
+  } catch (err) {
+    console.error('[download-shorts] error', err);
+    res.status(500).json({ error: err.message });
   }
 });
 

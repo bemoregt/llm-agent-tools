@@ -62,6 +62,14 @@
       <div class="side-section">
         <h3><a href="/help">❓ 도움말</a></h3>
       </div>
+
+      <% if (typeof mode !== 'undefined' && mode === 'view') { %>
+        <div class="side-section">
+          <h3>🔖 북마크 정리</h3>
+          <button type="button" id="bookmark-sort-btn" class="btn big" data-page="<%= encodeURIComponent(name) %>">📊 많이 클릭한 순으로 정렬</button>
+          <p class="side-hint" id="bookmark-sort-status">많이 클릭한 링크는 위로, 메일 링크는 상단 고정</p>
+        </div>
+      <% } %>
     </aside>
     <main class="content">
       <div id="drop-overlay" class="drop-overlay" style="display:none">📁 파일을 놓아주세요</div>
