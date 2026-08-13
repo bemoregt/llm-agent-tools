@@ -281,10 +281,21 @@ a.finder-link:hover { background: #eef4ff; }
   text-align: center;
 }
 
+.vrml-bar {
+  margin-top: 12px;
+  text-align: center;
+}
+
 .rainphoto-bar {
   margin-top: 12px;
   text-align: center;
 }
+
+.webcapture-bar {
+  margin-top: 12px;
+  text-align: center;
+}
+
 .codetest-live-controls {
   margin: 8px 0 16px;
   max-width: 480px;
