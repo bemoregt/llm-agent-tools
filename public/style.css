@@ -56,6 +56,15 @@ body {
   padding: 4px 6px;
   border: 1px solid #c9bd8f;
 }
+.ai-model-picker { margin-top: 6px; }
+.ai-model-select {
+  width: 100%;
+  font-family: inherit;
+  font-size: 0.85em;
+  padding: 4px 6px;
+  border: 1px solid #c9bd8f;
+  background: #fff;
+}
 .content { flex: 1 1 auto; max-width: 780px; margin: 0 auto; padding: 24px 16px 60px; }
 
 .page-name {
@@ -173,6 +182,35 @@ a.finder-link:hover { background: #eef4ff; }
   border: 1px solid #ccc;
   background: #000;
 }
+
+.aiedit-bar {
+  margin-top: 20px;
+  padding: 12px;
+  border: 1px solid #ccc;
+  background: #f7f6f0;
+}
+.aiedit-hint {
+  margin: 0 0 8px;
+  font-size: 0.9em;
+  color: #555;
+}
+.aiedit-input-row {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+}
+.aiedit-input {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  font-family: inherit;
+  font-size: 0.95em;
+  line-height: 1.4;
+  padding: 6px 8px;
+  border: 1px solid #999;
+}
+.aiedit-input:disabled { background: #eee; }
 
 .copy-bar {
   margin-top: 20px;

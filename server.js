@@ -145,6 +145,11 @@ app.get('/', (req, res) => {
   res.redirect('/pages');
 });
 
+app.get('/page', (req, res) => {
+  if (wiki.pageExists('index')) return res.redirect('/page/index');
+  res.redirect('/pages');
+});
+
 app.get('/pages', (req, res) => {
   res.render('list', { pages: wiki.listPages() });
 });
@@ -157,7 +162,31 @@ app.get('/api/pages', (req, res) => {
 // Used by the sidebar AI status indicator (public/ai-status.js) to show
 // which Ollama model is currently answering the page's AI buttons.
 app.get('/api/ai-model', (req, res) => {
-  res.json({ model: ollama.OLLAMA_MODEL });
+  res.json({ model: ollama.getModel() });
+});
+
+// Backs the sidebar model picker's suggestion list - best-effort, since
+// Ollama being briefly unreachable shouldn't break page loads (the picker
+// just falls back to no suggestions and the user can still type a name).
+app.get('/api/ai-models', async (req, res) => {
+  try {
+    res.json({ models: await ollama.listModels() });
+  } catch (err) {
+    res.json({ models: [], error: err.message });
+  }
+});
+
+// Switches which Ollama model answers every AI button on the wiki from now
+// on - not scoped to a page, since it's one shared setting for the whole
+// site (mirrors how ollama.getModel() itself is a single module-level value).
+app.post('/api/ai-model', (req, res) => {
+  try {
+    const model = (req.body && req.body.model) || '';
+    ollama.setModel(model);
+    res.json({ ok: true, model: ollama.getModel() });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
 });
 
 app.get('/graph', (req, res) => {
@@ -328,6 +357,43 @@ app.post('/page/:name/core-function', requireIndexAuth, async (req, res) => {
     res.json({ ok: true, functions, diagram });
   } catch (err) {
     console.error('[core-function] error', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// A page long enough to blow past this is long enough that asking the
+// model to faithfully reproduce every unrelated line verbatim (see
+// ollama.editPageContent) stops being reliable - better to fail fast with a
+// clear reason than silently drop content.
+const AI_EDIT_MAX_BODY_CHARS = 20000;
+
+// "AI에게 수정 지시하기": a free-text command box (present on every page)
+// for asking Ollama to revise whatever it (or a person) already put on the
+// page - generated core functions, code, VRML scenes, summaries, plain
+// prose, etc. The whole current body is sent as context and rewritten in
+// place per the instruction.
+app.post('/page/:name/ai-edit', requireIndexAuth, async (req, res) => {
+  try {
+    const { name } = req.params;
+    if (!wiki.pageExists(name)) return res.status(404).json({ error: 'page not found' });
+
+    const instruction = ((req.body && req.body.instruction) || '').trim();
+    if (!instruction) return res.status(400).json({ error: '수정 지시 내용을 입력해주세요.' });
+
+    const { body } = wiki.readPage(name);
+    if (!body.trim()) return res.status(400).json({ error: '수정할 문서 내용이 없습니다.' });
+    if (body.length > AI_EDIT_MAX_BODY_CHARS) {
+      return res
+        .status(400)
+        .json({ error: `문서가 너무 깁니다 (최대 ${AI_EDIT_MAX_BODY_CHARS}자). 직접 편집으로 수정해주세요.` });
+    }
+
+    const { revisedBody, summary } = await ollama.editPageContent(name, body, instruction);
+    wiki.writePage(name, revisedBody);
+
+    res.json({ ok: true, summary });
+  } catch (err) {
+    console.error('[ai-edit] error', err);
     res.status(500).json({ error: err.message });
   }
 });

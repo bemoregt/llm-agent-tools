@@ -3,6 +3,15 @@
   <div class="page-body">
     <%- html %>
   </div>
+  <div class="aiedit-bar">
+    <p class="aiedit-hint">AI가 이 문서에 만든 결과물(핵심 함수, 코드, 장면, 요약 등)이나 글에 수정을 지시하면 문서에 바로 반영됩니다. (여러 줄 입력 가능, ⌘/Ctrl+Enter로 전송)</p>
+    <div class="aiedit-input-row">
+      <textarea id="aiedit-input" class="aiedit-input" rows="3" placeholder="예: 핵심 함수 설명을 더 자세히 써줘"></textarea>
+      <button type="button" id="aiedit-btn" class="btn primary">✏️ AI에게 수정 지시하기</button>
+    </div>
+    <p class="side-hint" id="aiedit-status"></p>
+  </div>
+
   <div class="copy-bar">
     <button type="button" id="copy-btn" class="btn">📋 텍스트 복사</button>
     <p class="side-hint" id="copy-status"></p>
@@ -127,6 +136,7 @@
     <a class="btn" id="up-btn" style="display:none"></a>
   </div>
   <script src="/static/nav.js"></script>
+  <script src="/static/aiedit.js"></script>
   <script src="/static/copytext.js"></script>
   <script src="/static/glossary.js"></script>
   <script src="/static/video.js"></script>
