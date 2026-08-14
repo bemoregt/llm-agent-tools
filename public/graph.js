@@ -1,11 +1,32 @@
 (function () {
+  // Buttonfly-style 3D wiki navigator.
+  //
+  // This replaces the old orbit-camera "cone tree" graph view with the
+  // interaction language of the classic SGI "buttonfly" demo: a FIXED
+  // camera looking at a flat grid of boxy buttons. Click a button and it
+  // flies toward you, and its own linked pages become the next grid of
+  // buttons - drilling deeper into the wiki's link tree one screen at a
+  // time. Click empty space and the button you came in on flies back out
+  // to its resting spot, returning you to the previous screen.
+  //
+  // Two things buttonfly didn't have to deal with that a real wiki does:
+  //   - a page can have far more links than fit on one screen. Rather than
+  //     a separate prev/next UI, this is handled exactly the way the
+  //     original buttonfly's own menu files handled an oversized menu (see
+  //     "More Demos" in menus/m_demos): the last slot on a crowded screen
+  //     becomes an ordinary-looking button - "다음 버튼들" - that flies you
+  //     into the next batch of the same list, same as any other button;
+  //   - link titles are free text (often long, often Korean), so labels
+  //     are trimmed to their first few words and drawn with one font stack
+  //     that covers Hangul and Latin alike (canvas text, not a bitmap font).
+  //
+  // There's deliberately no info panel or preview pane sitting over the
+  // scene - buttonfly is just buttons. A branch button flies you in and
+  // shows its own links as the next screen; a leaf button (nothing further
+  // to drill into) opens that real page in a new tab, the same way
+  // buttonfly's own leaf buttons ran their action in place without ever
+  // covering the button grid.
   var statusEl = document.getElementById('graph-status');
-  var panelEl = document.getElementById('graph-panel');
-  var panelTitle = document.getElementById('panel-title');
-  var panelMeta = document.getElementById('panel-meta');
-  var panelOpen = document.getElementById('panel-open');
-  var panelBack = document.getElementById('panel-back');
-  var panelUp = document.getElementById('panel-up');
   var canvas = document.getElementById('graph-canvas');
   if (!canvas || typeof THREE === 'undefined') return;
 
@@ -14,64 +35,25 @@
     statusEl.style.display = text ? '' : 'none';
   }
 
-  // --- Forward-facing cone tree layout --------------------------------------
-  // The root sits at the tip, close to the viewer. Each node inherits an
-  // angular slice from its parent (split among children in proportion to
-  // subtree size, like a sunburst), but the cone is capped well under a full
-  // circle so the tree fans out ahead of the camera instead of wrapping
-  // all the way around it. Distance from the root grows with depth, so
-  // ordinary camera perspective makes deeper nodes look both farther away
-  // and smaller - reinforced by shrinking their actual size a little too.
-  var CONE_ANGLE = Math.PI * 0.85;
-  var MIN_ARC_PER_NODE = 3.6;
+  // Buttons on screen at once, max. Above this, the last slot becomes a
+  // "다음 버튼들" (more buttons) button instead of a 9th real link.
+  var MAX_PER_SCREEN = 9;
+  var PAGE_STEP = MAX_PER_SCREEN - 1;
 
-  function layoutTree(root, childrenOf) {
-    var leafCount = {};
-    function countLeaves(node) {
-      if (leafCount[node] !== undefined) return leafCount[node];
-      var kids = childrenOf[node] || [];
-      var count = kids.length ? 0 : 1;
-      for (var i = 0; i < kids.length; i++) count += countLeaves(kids[i]);
-      leafCount[node] = count;
-      return count;
-    }
-    countLeaves(root);
+  // Long titles just show their first few words on the button face.
+  var TITLE_MAX_WORDS = 6;
 
-    // Pick a depth spacing generous enough that even the widest single
-    // fan-out (the node with the most direct children) gets enough arc
-    // length per child to avoid overlapping boxes.
-    var maxChildren = 1;
-    Object.keys(childrenOf).forEach(function (k) {
-      maxChildren = Math.max(maxChildren, childrenOf[k].length);
-    });
-    var depthSpacing = Math.max(10, (MIN_ARC_PER_NODE * maxChildren) / CONE_ANGLE);
+  // The wiki's own body-text font stack (public/style.css: body {
+  // font-family: Georgia, "Nanum Myeongjo", serif }) - so button labels
+  // read as the same typeface as the pages themselves, not a lookalike.
+  var LABEL_FONT = 'Georgia, "Nanum Myeongjo", serif';
 
-    var positions = {};
-    function place(node, depth, angleStart, angleEnd) {
-      var angle = (angleStart + angleEnd) / 2;
-      var radius = depth * depthSpacing;
-      positions[node] = {
-        x: radius * Math.sin(angle),
-        z: -radius * Math.cos(angle),
-        depth: depth,
-        leaves: leafCount[node],
-      };
-      var kids = childrenOf[node] || [];
-      if (!kids.length) return;
-      var span = angleEnd - angleStart;
-      var total = leafCount[node] || 1;
-      var cursor = angleStart;
-      kids.forEach(function (k) {
-        var portion = (leafCount[k] / total) * span;
-        place(k, depth + 1, cursor, cursor + portion);
-        cursor += portion;
-      });
-    }
-    place(root, 0, -CONE_ANGLE / 2, CONE_ANGLE / 2);
-    return { positions: positions, depthSpacing: depthSpacing };
+  function shortLabel(text) {
+    var words = String(text || '').trim().split(/\s+/).filter(Boolean);
+    if (words.length <= TITLE_MAX_WORDS) return words.join(' ');
+    return words.slice(0, TITLE_MAX_WORDS).join(' ') + '…';
   }
 
-  // --- Fetch the tree and build the scene ----------------------------------
   fetch('/api/graph')
     .then(function (r) {
       if (!r.ok) throw new Error('failed to load graph');
@@ -92,410 +74,413 @@
     });
 
   function buildScene(root, nodes, edges) {
-    var childrenOf = {};
-    var parentOf = {};
-    edges.forEach(function (e) {
-      if (!childrenOf[e.parent]) childrenOf[e.parent] = [];
-      childrenOf[e.parent].push(e.child);
-      parentOf[e.child] = e.parent;
+    var labelOf = {};
+    nodes.forEach(function (n) {
+      labelOf[n.id] = n.label || n.id;
     });
 
-    var layout = layoutTree(root, childrenOf);
-    var positions = layout.positions;
-    var depthSpacing = layout.depthSpacing;
-    var minX = 0, maxX = 0, maxDepth = 0;
-    for (var id in positions) {
-      var p = positions[id];
-      minX = Math.min(minX, p.x);
-      maxX = Math.max(maxX, p.x);
-      maxDepth = Math.max(maxDepth, p.depth);
-    }
-    var totalDepthSpan = Math.max(maxDepth * depthSpacing, 40);
-    var totalWidthSpan = Math.max(maxX - minX, 40);
+    // Children in the order their links were first discovered (i.e. roughly
+    // the order they're mentioned in the parent page) - a more meaningful
+    // reading order than an alphabetical resort.
+    var childrenOf = {};
+    edges.forEach(function (e) {
+      if (e.parent === e.child) return;
+      if (!childrenOf[e.parent]) childrenOf[e.parent] = [];
+      childrenOf[e.parent].push(e.child);
+    });
 
+    // --- Three.js boilerplate: fixed camera, no orbit controls -----------
+    // Buttonfly's camera never moves; only the buttons do. Keeping that
+    // here is what makes this feel like buttonfly instead of "yet another
+    // free-orbit 3D graph."
     var scene = new THREE.Scene();
 
-    // Screen-space sky gradient: a band of bright green glowing at the
-    // horizon, fading to black both above (sky) and below. A flat texture
-    // (not an environment map) so it stays fixed relative to the screen.
+    // buttonfly's own clear color is a near-black (0.1, 0.1, 0.1) - a flat
+    // dark charcoal, not the navy this used to be, so a faint vertical
+    // gradient is all that's kept for depth cues.
     var skyCanvas = document.createElement('canvas');
     skyCanvas.width = 2;
     skyCanvas.height = 256;
     var skyCtx = skyCanvas.getContext('2d');
     var skyGradient = skyCtx.createLinearGradient(0, 0, 0, 256);
-    skyGradient.addColorStop(0, '#000000');
-    skyGradient.addColorStop(0.55, '#33cc5a');
-    skyGradient.addColorStop(1, '#000000');
+    skyGradient.addColorStop(0, '#0d0d0d');
+    skyGradient.addColorStop(0.55, '#1a1a1a');
+    skyGradient.addColorStop(1, '#050505');
     skyCtx.fillStyle = skyGradient;
     skyCtx.fillRect(0, 0, 2, 256);
     scene.background = new THREE.CanvasTexture(skyCanvas);
 
-    var fogFar = totalDepthSpan * 2.2;
-    scene.fog = new THREE.Fog(0x0b2412, fogFar * 0.35, fogFar);
-
-    var camera = new THREE.PerspectiveCamera(58, window.innerWidth / window.innerHeight, 0.1, 3000);
-    camera.position.set(0, totalDepthSpan * 0.22, totalDepthSpan * 0.35);
+    var camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 200);
+    camera.position.set(0, 0, 0);
+    camera.lookAt(0, 0, -1);
 
     var renderer = new THREE.WebGLRenderer({ canvas: canvas, antialias: true });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.setSize(window.innerWidth, window.innerHeight);
-    renderer.shadowMap.enabled = true;
-    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
-    var controls = new THREE.OrbitControls(camera, renderer.domElement);
-    controls.enableDamping = true;
-    controls.dampingFactor = 0.08;
-    controls.target.set(0, 0, -totalDepthSpan * 0.35);
-    controls.maxDistance = totalDepthSpan * 3;
-    controls.minDistance = 2;
-    controls.maxPolarAngle = Math.PI * 0.49;
-    controls.update();
+    scene.add(new THREE.HemisphereLight(0x9fb6cc, 0x0a0d12, 0.95));
+    var key = new THREE.DirectionalLight(0xfff2d8, 0.9);
+    key.position.set(-3, 4, 2);
+    scene.add(key);
 
-    // Giant flat ground plane the whole tree sits on - a plain solid color floor.
-    var groundW = totalWidthSpan * 1.6;
-    var groundD = totalDepthSpan * 1.6;
+    // --- Button shape: buttonfly's own beveled "pillow" box, not a plain
+    // cube. Ported verbatim from sgi-demos/demos/buttonfly/data.h's
+    // edge_polys/front_polys (WIDE/HIGH/THICK/BEVEL are that file's own
+    // constants) - a flat recessed front face where the label sits, joined
+    // to the outer rim by 4 beveled trapezoids, exactly like the original.
+    // buttonfly's own draw_button() rotates every button 180 degrees about
+    // X before drawing it (part of how the original made backface culling
+    // work); rotateX(PI) below does the same thing once, at geometry-build
+    // time, which is what turns this data's front face to actually face
+    // the fixed camera here.
+    var BF_WIDE = 0.625, BF_HIGH = 0.5, BF_THICK = 0.125, BF_BEVEL = 0.125;
+    var BTN_SCALE = 1.24; // buttonfly's own units -> a comfortable on-screen size
+    var BUTTON_W = BF_WIDE * 2 * BTN_SCALE;
+    var BUTTON_H = BF_HIGH * 2 * BTN_SCALE;
+    var BUTTON_D = BF_THICK * 2 * BTN_SCALE;
+    var FRONT_W = (BF_WIDE - BF_BEVEL) * 2 * BTN_SCALE;
+    var FRONT_H = (BF_HIGH - BF_BEVEL) * 2 * BTN_SCALE;
+    var FRONT_Z = BF_THICK * BTN_SCALE + 0.005; // label plane sits just proud of the recessed face
 
-    var ground = new THREE.Mesh(
-      new THREE.PlaneGeometry(groundW, groundD),
-      new THREE.MeshStandardMaterial({ color: 0x7a3350, roughness: 0.95, metalness: 0 })
-    );
-    ground.rotation.x = -Math.PI / 2;
-    ground.position.set((minX + maxX) / 2, 0, -totalDepthSpan * 0.5 + depthSpacing * 0.5);
-    ground.receiveShadow = true;
-    scene.add(ground);
+    function buildButtonGeometry() {
+      var w = BF_WIDE, h = BF_HIGH, t = BF_THICK, b = BF_BEVEL;
+      // Quads + their flat face normal, straight from data.h's edge_polys/
+      // edge_normals and front_polys/front_normals.
+      var faces = [
+        [[[-w, h, 0], [-w, h, t], [w, h, t], [w, h, 0]], [0, 1, 0]],
+        [[[w, h, t], [w, -h, t], [w, -h, 0], [w, h, 0]], [1, 0, 0]],
+        [[[-w, h, 0], [-w, -h, 0], [-w, -h, t], [-w, h, t]], [-1, 0, 0]],
+        [[[w, -h, 0], [w, -h, t], [-w, -h, t], [-w, -h, 0]], [0, -1, 0]],
+        [[[-w + b, h - b, -t], [-w, h, 0], [w, h, 0], [w - b, h - b, -t]], [0, Math.SQRT1_2, -Math.SQRT1_2]],
+        [[[w, -h, 0], [w - b, -h + b, -t], [w - b, h - b, -t], [w, h, 0]], [Math.SQRT1_2, 0, -Math.SQRT1_2]],
+        [[[-w, h, 0], [-w + b, h - b, -t], [-w + b, -h + b, -t], [-w, -h, 0]], [-Math.SQRT1_2, 0, -Math.SQRT1_2]],
+        [[[w, -h, 0], [-w, -h, 0], [-w + b, -h + b, -t], [w - b, -h + b, -t]], [0, -Math.SQRT1_2, -Math.SQRT1_2]],
+        [[[-w + b, h - b, -t], [w - b, h - b, -t], [w - b, -h + b, -t], [-w + b, -h + b, -t]], [0, 0, -1]],
+        // Back face (data.h's back_polys/back_normals) - buttonfly only ever
+        // needs this while a button is mid-flip (its own draw_selected_button
+        // draws a literal back polygon there); without it, the button would
+        // be a hollow shell for the half of its 180-degree spin where the
+        // camera is looking at what used to be the inside.
+        [[[-w, -h, t], [w, -h, t], [w, h, t], [-w, h, t]], [0, 0, 1]],
+      ];
+      var positions = [];
+      var normals = [];
+      faces.forEach(function (face) {
+        var quad = face[0], n = face[1];
+        [[0, 1, 2], [0, 2, 3]].forEach(function (tri) {
+          tri.forEach(function (i) {
+            positions.push(quad[i][0], quad[i][1], quad[i][2]);
+            normals.push(n[0], n[1], n[2]);
+          });
+        });
+      });
+      var geom = new THREE.BufferGeometry();
+      geom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+      geom.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
+      geom.rotateX(Math.PI);
+      geom.scale(BTN_SCALE, BTN_SCALE, BTN_SCALE);
+      return geom;
+    }
 
-    // Lighting: one fixed "sun" casts real shadows for a solid, 3D look;
-    // hemisphere light keeps shadowed areas from going fully black.
-    scene.add(new THREE.HemisphereLight(0x8899aa, 0x101014, 0.9));
-    var treeCenterX = (minX + maxX) / 2;
-    var treeCenterZ = -totalDepthSpan / 2;
-    var sun = new THREE.DirectionalLight(0xfff2d8, 1.3);
-    sun.target.position.set(treeCenterX, 0, treeCenterZ);
-    sun.position.set(treeCenterX + totalWidthSpan * 0.4, totalDepthSpan * 0.6, treeCenterZ + totalDepthSpan * 0.4);
-    sun.castShadow = true;
-    sun.shadow.mapSize.set(2048, 2048);
-    var shadowSpan = Math.max(totalWidthSpan, totalDepthSpan) * 0.7;
-    sun.shadow.camera.left = -shadowSpan;
-    sun.shadow.camera.right = shadowSpan;
-    sun.shadow.camera.top = shadowSpan;
-    sun.shadow.camera.bottom = -shadowSpan;
-    sun.shadow.camera.near = 1;
-    sun.shadow.camera.far = totalDepthSpan * 3;
-    sun.shadow.bias = -0.0015;
-    sun.shadow.camera.updateProjectionMatrix();
-    scene.add(sun);
-    scene.add(sun.target);
+    var buttonGeom = buildButtonGeometry();
+    // buttonfly's own menus/m_demos color: '.color. .9 .5 .9' / '.highcolor.
+    // 1.0 .7 1.0' (0-1 floats) - the pink every real demo button in the
+    // original used.
+    var nodeMaterial = new THREE.MeshStandardMaterial({ color: 0xe680e6, roughness: 0.85, metalness: 0 });
+    var nodeHoverMaterial = new THREE.MeshStandardMaterial({ color: 0xffb3ff, roughness: 0.75, metalness: 0 });
 
-    // --- Nodes: flat cardboard-colored boxes, size trimmed a little by depth
-    var boxMaterial = new THREE.MeshStandardMaterial({ color: 0x87ceeb, roughness: 0.75, metalness: 0.05 });
-    var selectedMaterial = new THREE.MeshStandardMaterial({
-      color: 0xffe9a8,
-      emissive: 0xffaa22,
-      emissiveIntensity: 1.1,
-      roughness: 0.5,
-    });
+    // The label is a flat CanvasTexture mapped onto a PlaneGeometry(FRONT_W,
+    // FRONT_H) - if the canvas's own pixel dimensions don't share that same
+    // width:height ratio, the GPU has to stretch the texture non-uniformly
+    // to cover the plane, which is exactly what was squashing the font
+    // horizontally and stretching it vertically. Deriving the canvas height
+    // from FRONT_H/FRONT_W keeps the two ratios identical, so text renders
+    // at its true, undistorted proportions.
+    var LABEL_CANVAS_W = 560;
+    var LABEL_CANVAS_H = Math.round(LABEL_CANVAS_W * (FRONT_H / FRONT_W));
 
-    var nodeMeshes = [];
-    nodes.forEach(function (n) {
-      var p = positions[n.id];
-      if (!p) return;
-      var depthScale = 1 / (1 + p.depth * 0.12);
-      var isRoot = n.id === root;
-      var footprint = (isRoot ? 4.4 : 2.1 + Math.min(Math.log2(p.leaves + 1), 5) * 0.35) * depthScale * 2;
-      var boxHeight = (isRoot ? 2.6 : 1.1) * depthScale * 2;
-      var mesh = new THREE.Mesh(new THREE.BoxGeometry(footprint, boxHeight, footprint * 0.72), boxMaterial);
-      mesh.position.set(p.x, boxHeight / 2, p.z);
-      mesh.castShadow = true;
-      mesh.receiveShadow = true;
-      mesh.userData.name = n.id;
-      mesh.userData.top = boxHeight;
-      mesh.userData.childCount = (childrenOf[n.id] || []).length;
-      mesh.userData.footprint = footprint;
-      mesh.userData.label = n.label;
-      scene.add(mesh);
-      nodeMeshes.push(mesh);
-    });
-
-    // Links: plain white lines laid on the floor between node footprints.
-    // WebGL ignores LineBasicMaterial.linewidth on most platforms (Chrome/
-    // Brave included), so a real thickness needs actual geometry - a thin
-    // flat strip - rather than a GL line.
-    var LINK_GROUND_Y = 0.12;
-    var LINK_WIDTH = 0.3;
-    var linkGroup = new THREE.Group();
-    var linkMaterial = new THREE.MeshBasicMaterial({ color: 0xbdb76b });
-    // Invisible material used only for the oversized click target below - the
-    // visible ribbon is far too thin/flat to reliably hit with a raycast at
-    // the shallow viewing angles this scene is usually seen from.
-    var linkHitMaterial = new THREE.MeshBasicMaterial({ visible: false });
-    edges.forEach(function (e) {
-      var a = positions[e.parent];
-      var b = positions[e.child];
-      if (!a || !b) return;
-      var dx = b.x - a.x;
-      var dz = b.z - a.z;
-      var length = Math.hypot(dx, dz);
-      if (length < 0.01) return;
-      var angle = -Math.atan2(dz, dx);
-      var strip = new THREE.Mesh(new THREE.BoxGeometry(length, 0.05, LINK_WIDTH), linkMaterial);
-      strip.position.set((a.x + b.x) / 2, LINK_GROUND_Y, (a.z + b.z) / 2);
-      strip.rotation.y = angle;
-      strip.userData.parentName = e.parent;
-      strip.userData.childName = e.child;
-      linkGroup.add(strip);
-
-      // Oversized, invisible click target riding along the same strip so a
-      // click anywhere near the road - not just the exact thin ribbon - hits.
-      var hitBox = new THREE.Mesh(new THREE.BoxGeometry(length, 1.6, LINK_WIDTH * 6), linkHitMaterial);
-      hitBox.position.set((a.x + b.x) / 2, LINK_GROUND_Y + 0.8, (a.z + b.z) / 2);
-      hitBox.rotation.y = angle;
-      hitBox.userData.parentName = e.parent;
-      hitBox.userData.childName = e.child;
-      linkGroup.add(hitBox);
-    });
-    scene.add(linkGroup);
-
-    // --- Node labels: the page's own title, laid flat on top of its box's
-    // roof like signage painted on a building. Drawn onto a canvas with the
-    // browser's own font rendering (rather than THREE.TextGeometry, which
-    // needs a pre-baked vector font with every glyph included - fine for ~200
-    // Latin letterforms, hopeless for Hangul's 11000+ syllable blocks) so any
-    // title - Korean included - just works with no extra font asset.
-    var LABEL_FONT = '"Nanum Myeongjo", "Apple SD Gothic Neo", "Malgun Gothic", sans-serif';
-    var LABEL_CANVAS_HEIGHT = 128;
     function makeLabelTexture(text) {
-      var canvas = document.createElement('canvas');
-      var ctx = canvas.getContext('2d');
-      var fontSize = LABEL_CANVAS_HEIGHT * 0.72;
-      ctx.font = 'bold ' + fontSize + 'px ' + LABEL_FONT;
-      var textWidth = Math.max(ctx.measureText(text).width, 1);
-      var padding = fontSize * 0.3;
-      canvas.width = textWidth + padding * 2;
-      canvas.height = LABEL_CANVAS_HEIGHT;
-      // Re-set font/alignment - sizing the canvas above resets the context.
-      ctx.font = 'bold ' + fontSize + 'px ' + LABEL_FONT;
+      var c = document.createElement('canvas');
+      var ctx = c.getContext('2d');
+      var fontPx = Math.round(LABEL_CANVAS_H * 0.24);
+      ctx.font = fontPx + 'px ' + LABEL_FONT;
+      var maxWidth = LABEL_CANVAS_W;
+      c.width = maxWidth;
+      c.height = LABEL_CANVAS_H;
+      ctx.font = fontPx + 'px ' + LABEL_FONT;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.fillStyle = '#000000';
-      ctx.fillText(text, canvas.width / 2, canvas.height / 2);
-
-      var texture = new THREE.CanvasTexture(canvas);
+      ctx.fillStyle = '#fdfdf6'; // the wiki's own page background cream (style.css body), for contrast on the pink
+      // Simple word-wrap onto up to 3 lines so long-ish labels still fit
+      // the button face instead of overflowing it.
+      var words = text.split(/\s+/);
+      var lines = [];
+      var line = '';
+      words.forEach(function (w) {
+        var trial = line ? line + ' ' + w : w;
+        if (ctx.measureText(trial).width > maxWidth - 24 && line) {
+          lines.push(line);
+          line = w;
+        } else {
+          line = trial;
+        }
+      });
+      if (line) lines.push(line);
+      lines = lines.slice(0, 3);
+      var lineHeight = fontPx * 1.15;
+      var startY = c.height / 2 - ((lines.length - 1) * lineHeight) / 2;
+      lines.forEach(function (l, i) {
+        ctx.fillText(l, c.width / 2, startY + i * lineHeight);
+      });
+      var texture = new THREE.CanvasTexture(c);
       texture.minFilter = THREE.LinearFilter;
       texture.generateMipmaps = false;
-      return { texture: texture, aspect: canvas.width / canvas.height };
+      return texture;
     }
 
-    nodeMeshes.forEach(function (mesh) {
-      var label = mesh.userData.label;
-      if (!label) return;
-      var p = positions[mesh.userData.name];
-      var depthScale = 1 / (1 + p.depth * 0.12);
-      var worldHeight = Math.max(mesh.userData.footprint * 0.22, 0.5) * depthScale;
-      var made = makeLabelTexture(label);
-      var worldWidth = worldHeight * made.aspect;
-
-      var labelMesh = new THREE.Mesh(
-        new THREE.PlaneGeometry(worldWidth, worldHeight),
-        new THREE.MeshBasicMaterial({ map: made.texture, transparent: true, depthWrite: false })
-      );
-      // Lay flat: rotating -90 deg around X turns the plane so it faces
-      // straight up, like signage painted on the box's roof.
-      labelMesh.rotation.x = -Math.PI / 2;
-      labelMesh.position.set(mesh.position.x, mesh.userData.top + 0.02, mesh.position.z);
-      labelMesh.receiveShadow = true;
-      scene.add(labelMesh);
-    });
-
-    // --- Selection: clicking a box turns on its lamp and flies the camera in
-    var raycaster = new THREE.Raycaster();
-    var mouse = new THREE.Vector2();
-    var selectedMesh = null;
-    var selectedLamp = null;
-    var selectedBeam = null;
-    var cameraAnim = null;
-    // Back-navigation stack: every time selection actually moves to a
-    // different node, the node being left is pushed here, so the 'b' key
-    // can pop it back off and return to it (plain undo, not full
-    // back/forward - going back doesn't create a fresh "redo" entry).
-    var history = [];
-
-    // Which way is this node's own subtree branching? Average direction to
-    // its children; a childless leaf instead continues the direction it was
-    // reached from (parent -> this node), so the camera still looks "onward".
-    function branchDirection(name) {
-      var p = positions[name];
-      var dir = new THREE.Vector3();
-      var kids = childrenOf[name] || [];
-      if (kids.length) {
-        kids.forEach(function (k) {
-          var kp = positions[k];
-          if (kp) dir.add(new THREE.Vector3(kp.x - p.x, 0, kp.z - p.z));
-        });
-      } else if (parentOf[name] && positions[parentOf[name]]) {
-        var pp = positions[parentOf[name]];
-        dir.set(p.x - pp.x, 0, p.z - pp.z);
-      }
-      if (dir.lengthSq() < 1e-6) dir.set(0, 0, -1);
-      return dir.normalize();
-    }
-
-    function flyTo(newCamPos, newTarget, duration) {
-      var startCamPos = camera.position.clone();
-      var startTarget = controls.target.clone();
-      var startTime = null;
-      cameraAnim = function (now) {
-        if (startTime === null) startTime = now;
-        var t = Math.min((now - startTime) / duration, 1);
-        var ease = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
-        camera.position.lerpVectors(startCamPos, newCamPos, ease);
-        controls.target.lerpVectors(startTarget, newTarget, ease);
-        if (t >= 1) cameraAnim = null;
-      };
-    }
-
-    function clearSelection() {
-      if (selectedMesh) selectedMesh.material = boxMaterial;
-      if (selectedLamp) {
-        scene.remove(selectedLamp.target);
-        scene.remove(selectedLamp);
-        selectedLamp = null;
-      }
-      if (selectedBeam) {
-        scene.remove(selectedBeam);
-        selectedBeam = null;
-      }
-      selectedMesh = null;
-      panelEl.classList.remove('visible');
-    }
-
-    function selectMesh(mesh, moveCamera, lookDirOverride, skipHistory) {
-      if (!skipHistory && selectedMesh && selectedMesh !== mesh) {
-        history.push(selectedMesh.userData.name);
-      }
-      clearSelection();
-      selectedMesh = mesh;
-      mesh.material = selectedMaterial;
-
-      // A stage-light spotlight, not an omnidirectional point light: a
-      // narrow cone with a crisp, hard edge (near-zero penumbra) aimed
-      // straight down at just this box, like a handheld flashlight picking
-      // out a sharply bounded circle on the ground.
-      var spotAngle = Math.atan(2 * Math.tan(Math.PI / 9)) / 4;
-      var lampHeight = mesh.userData.top + 45;
-      var lamp = new THREE.SpotLight(0xfff2b8, 7, 100, spotAngle, 0.03, 2);
-      lamp.position.set(mesh.position.x, lampHeight, mesh.position.z);
-      lamp.target.position.set(mesh.position.x, mesh.position.y, mesh.position.z);
-      scene.add(lamp);
-      scene.add(lamp.target);
-      selectedLamp = lamp;
-
-      // A translucent cone makes the beam itself visible, not just the spot
-      // it lands on - like a spotlight's shaft cutting through haze.
-      var beamHeight = lampHeight - mesh.position.y;
-      var beamRadius = beamHeight * Math.tan(spotAngle);
-      var beam = new THREE.Mesh(
-        new THREE.ConeGeometry(beamRadius, beamHeight, 24, 1, true),
+    // A button is a small group: the beveled box plus a label plane glued
+    // to its recessed front face (the face pointed at the fixed camera).
+    function makeButton(spec) {
+      // Shared (not cloned) material: every button looks alike, so there's
+      // nothing per-instance for a clone to protect, and swapping
+      // box.material back to this same shared instance on hover-out is
+      // exactly what's wanted.
+      var box = new THREE.Mesh(buttonGeom, nodeMaterial);
+      var label = new THREE.Mesh(
+        new THREE.PlaneGeometry(FRONT_W, FRONT_H),
         new THREE.MeshBasicMaterial({
-          color: 0xfff2b8,
+          map: makeLabelTexture(spec.label),
           transparent: true,
-          opacity: 0.16,
           depthWrite: false,
-          side: THREE.DoubleSide,
         })
       );
-      beam.position.set(mesh.position.x, mesh.position.y + beamHeight / 2, mesh.position.z);
-      scene.add(beam);
-      selectedBeam = beam;
+      label.position.z = FRONT_Z;
 
-      panelTitle.textContent = mesh.userData.name;
-      panelMeta.textContent = '연결된 하위 문서: ' + mesh.userData.childCount + '개';
-      panelOpen.href = '/page/' + encodeURIComponent(mesh.userData.name);
-      panelEl.classList.add('visible');
-      if (panelUp) panelUp.disabled = !parentOf[mesh.userData.name];
-      if (panelBack) panelBack.disabled = history.length === 0;
-
-      if (moveCamera !== false) {
-        var dir = lookDirOverride || branchDirection(mesh.userData.name);
-        var nodePos = mesh.position.clone();
-        var behind = depthSpacing * 0.13;
-        var elevation = depthSpacing * 0.035;
-        var ahead = depthSpacing * 0.22;
-        var newCamPos = nodePos.clone().addScaledVector(dir, -behind).add(new THREE.Vector3(0, elevation, 0));
-        var newTarget = nodePos.clone().addScaledVector(dir, ahead);
-        flyTo(newCamPos, newTarget, 1700);
-      }
+      var group = new THREE.Group();
+      group.add(box);
+      group.add(label);
+      group.userData = {
+        id: spec.id,
+        more: !!spec.more,
+        box: box,
+        normalMaterial: nodeMaterial,
+        hoverMaterial: nodeHoverMaterial,
+      };
+      // The label plane sits *in front of* the box (closer to the camera),
+      // so a straight-on ray hits it before the box - it needs the same
+      // back-reference or a center click (the most natural place to click)
+      // resolves to an id-less group.
+      box.userData.buttonGroup = group;
+      label.userData.buttonGroup = group;
+      return group;
     }
 
-    // A link click has no box of its own to select - it hands off to whichever
-    // end of the road (parent or child) the click landed closer to, so clicking
-    // near either building along that road lights it up and flies there.
-    function meshForName(name) {
-      return nodeMeshes.filter(function (m) { return m.userData.name === name; })[0];
-    }
+    // --- Grid layout: a generic, wide-biased grid for any button count ---
+    // up to MAX_PER_SCREEN, standing in for buttonfly's hand-tuned per-count
+    // "spot" tables (which only ever covered up to 32 buttons of fixed menu
+    // files, not an arbitrary wiki's fan-out).
+    var SPACING_X = 1.75, SPACING_Y = 1.45;
+    // How much of the viewport the grid should fill: the depth (z) it's
+    // placed at is solved for directly from this, rather than picked by
+    // feel, so the same 9-or-fewer button screen always reads as "close and
+    // legible" regardless of window size/aspect - not a handful of small
+    // boxes floating in the middle of a big empty screen.
+    var FILL_FRACTION = 0.76;
+    var MIN_Z = 2.6;
 
-    // 'b' key: pop the back-navigation stack and fly to whatever node was
-    // selected just before the current one.
-    function goBack() {
-      if (!history.length) return;
-      var target = meshForName(history.pop());
-      if (target) selectMesh(target, true, null, true);
-    }
+    function layoutSlots(n) {
+      if (n <= 0) return [];
+      var cols = Math.max(1, Math.round(Math.sqrt(n * 1.8)));
+      var rows = Math.ceil(n / cols);
 
-    // Down-arrow: go to the current node's parent (up the tree) - not the
-    // same as 'b', which retraces wherever you've actually been.
-    function goToParent() {
-      if (!selectedMesh) return;
-      var name = selectedMesh.userData.name;
-      var parentName = parentOf[name];
-      if (!parentName) return;
-      var target = meshForName(parentName);
-      if (!target) return;
+      var rowSpanX = (cols - 1) * SPACING_X + BUTTON_W;
+      var rowSpanY = (rows - 1) * SPACING_Y + BUTTON_H;
+      var halfVFov = (camera.fov * Math.PI) / 360;
+      var tanHalfV = Math.tan(halfVFov);
+      var zForWidth = rowSpanX / FILL_FRACTION / (2 * tanHalfV * camera.aspect);
+      var zForHeight = rowSpanY / FILL_FRACTION / (2 * tanHalfV);
+      var baseZ = -Math.max(zForWidth, zForHeight, MIN_Z);
 
-      // Same "look back at the child we're leaving" framing used when
-      // clicking the parent-side half of a link.
-      var pPos = positions[parentName];
-      var cPos = positions[name];
-      var lookDir = null;
-      if (pPos && cPos) {
-        lookDir = new THREE.Vector3(cPos.x - pPos.x, 0, cPos.z - pPos.z);
-        if (lookDir.lengthSq() >= 1e-6) lookDir.normalize();
-        else lookDir = null;
-      }
-      selectMesh(target, true, lookDir);
-    }
-
-    // Buttons in the info panel do the exact same thing as the 'b'/down-arrow
-    // keys, but as plain clicks - keyboard shortcuts on a page like this are
-    // easily swallowed by browser extensions (a "b = back" binding in
-    // particular collides with common Vimium-style navigation add-ons)
-    // before our own keydown listener ever sees them, so clicking always
-    // works even when the keys don't.
-    if (panelBack) panelBack.addEventListener('click', goBack);
-    if (panelUp) panelUp.addEventListener('click', goToParent);
-
-    // Capture phase, so this runs before bubble-phase listeners a browser
-    // extension might have attached to try to claim the same keys first.
-    window.addEventListener(
-      'keydown',
-      function (ev) {
-        if (ev.metaKey || ev.ctrlKey || ev.altKey) return;
-        if (ev.key === 'b' || ev.key === 'B') {
-          goBack();
-        } else if (ev.key === 'ArrowDown') {
-          goToParent();
+      var slots = [];
+      var idx = 0;
+      for (var r = 0; r < rows && idx < n; r++) {
+        var remaining = n - idx;
+        var rowsLeft = rows - r;
+        var thisRowCols = Math.min(cols, Math.ceil(remaining / rowsLeft));
+        for (var c = 0; c < thisRowCols; c++) {
+          slots.push({
+            x: (c - (thisRowCols - 1) / 2) * SPACING_X,
+            y: ((rows - 1) / 2 - r) * SPACING_Y,
+            z: baseZ,
+          });
+          idx++;
         }
-      },
-      true
-    );
+      }
+      return slots;
+    }
 
-    function nearerEndpoint(point, ud) {
-      var pp = positions[ud.parentName];
-      var cp = positions[ud.childName];
-      if (!pp) return ud.childName;
-      if (!cp) return ud.parentName;
-      var dp = Math.hypot(point.x - pp.x, point.z - pp.z);
-      var dc = Math.hypot(point.x - cp.x, point.z - cp.z);
-      return dp <= dc ? ud.parentName : ud.childName;
+    // --- Screen state ------------------------------------------------------
+    var currentId = root;
+    var pageOffset = 0; // index into currentId's children that this screen starts showing from
+    // Stack of {id, offset} for the screens we drilled in from - popping
+    // this is the only "back" there is, since a button screen only ever
+    // shows one slice of one node's direct children (no free-roam history
+    // to track).
+    var stack = [];
+    var buttonGroups = [];
+    var flying = null; // active fly animation, if any
+
+    // Slices `id`'s children starting at `offset`: up to PAGE_STEP (8) of
+    // them, plus however many are left over beyond that - which, if
+    // nonzero, is what the screen renders as the 9th "다음 버튼들" button
+    // (buildScreen below) instead of a 9th real link.
+    function childPage(id, offset) {
+      var kids = childrenOf[id] || [];
+      var remaining = kids.length - offset;
+      if (remaining <= MAX_PER_SCREEN) {
+        return { slice: kids.slice(offset), more: 0 };
+      }
+      return { slice: kids.slice(offset, offset + PAGE_STEP), more: kids.length - (offset + PAGE_STEP) };
+    }
+
+    function clearButtons() {
+      buttonGroups.forEach(function (g) {
+        scene.remove(g);
+      });
+      buttonGroups = [];
+    }
+
+    // Builds (or rebuilds) the on-screen grid for `id`'s children starting
+    // at `offset`, at rest (no flight). Returns the button group for
+    // `focusId` if it's among the buttons just built, so a caller can
+    // animate that one specially (used when flying back out to a parent
+    // screen, or into a "다음 버튼들" screen from a specific earlier button).
+    function buildScreen(id, offset, focusId) {
+      clearButtons();
+      var info = childPage(id, offset);
+      var specs = info.slice.map(function (kid) {
+        return { id: kid, label: shortLabel(labelOf[kid] || kid) };
+      });
+      if (info.more > 0) {
+        specs.push({ more: true, label: '다음 버튼들 (' + info.more + '개 더)' });
+      }
+
+      var slots = layoutSlots(specs.length);
+      var focusGroup = null;
+      specs.forEach(function (spec, i) {
+        var group = makeButton(spec);
+        var slot = slots[i];
+        group.position.set(slot.x, slot.y, slot.z);
+        group.userData.restPosition = new THREE.Vector3(slot.x, slot.y, slot.z);
+        group.userData.restRotationX = 0;
+        scene.add(group);
+        buttonGroups.push(group);
+        if (spec.id ? spec.id === focusId : spec.more && focusId === MORE_FOCUS_ID) focusGroup = group;
+      });
+
+      currentId = id;
+      pageOffset = offset;
+      return focusGroup;
+    }
+
+    // --- Flight animation ---------------------------------------------------
+    // Ported directly from buttonfly's flyindraw()/flyoutdraw()/
+    // draw_selected_button(): those step a single t by exactly 0.02 every
+    // redrawn frame (t: 1.0 -> 0.0 flying in, 0.0 -> 1.0 flying out) with NO
+    // easing, and position is a plain linear lerp of t against the origin -
+    // translate(t*tx, t*ty, t*tz) - so the button doesn't stop at some
+    // arbitrary "close-up" spot the way a UI transition would; it flies all
+    // the way to the camera itself, and perspective alone is what makes it
+    // balloon up to fill the screen right at the end, exactly as it did in
+    // the original. At 0.02/frame and buttonfly's native ~60Hz redraw rate,
+    // a full transition is 1/0.02 = 50 frames - about 833ms.
+    var FLY_MS = 1000 / 60 * 50;
+    var FOCUS_POS = new THREE.Vector3(0, 0, 0);
+
+    function animateButton(group, direction, onDone) {
+      // direction: 'in' animates rest -> focus (t: 0 -> 1); 'out' animates
+      // focus -> rest (t: 1 -> 0), i.e. buttonfly's flyindraw vs flyoutdraw.
+      //
+      // draw_selected_button() also always uses button->highcolor while
+      // flying in and button->color while flying out (regardless of mouse
+      // hover) - not just a detail of the fly, but a real part of "what it
+      // looks like while it moves", so it's forced here rather than left to
+      // whatever the hover system last set box.material to.
+      group.userData.box.material = direction === 'in' ? group.userData.hoverMaterial : group.userData.normalMaterial;
+      var rest = group.userData.restPosition;
+      flying = {
+        group: group,
+        direction: direction,
+        start: performance.now(),
+        onDone: onDone,
+      };
+      function step(t) {
+        var mix = direction === 'in' ? t : 1 - t; // linear - buttonfly never eased this
+        group.position.lerpVectors(rest, FOCUS_POS, mix);
+        // buttonfly's own ax = button->ax * t: at rest (start of flying in)
+        // the button already sits at its full resting rotation, and that
+        // rotation UNWINDS toward 0 as it approaches the camera - i.e. the
+        // rotation angle here counts DOWN through the same turn a resting
+        // button is already holding, not a fresh spin in the other
+        // direction (hence the minus sign: winding further, the +Math.PI
+        // way, is a mirror-image swing of what the original actually does).
+        group.rotation.x = -Math.PI * mix;
+      }
+      flying.step = step;
+      step(0); // t is elapsed-time, not mix - step() itself maps t=0 to each direction's own start pose
+    }
+
+    // Sentinel focusId that means "focus the '다음 버튼들' button" instead of
+    // a real page id, for flying back out of a "more" screen into the
+    // button that led there (which has no id of its own).
+    var MORE_FOCUS_ID = ' more';
+
+    function flyInto(group) {
+      if (flying) return;
+      if (group.userData.more) {
+        animateButton(group, 'in', function () {
+          stack.push({ id: currentId, offset: pageOffset, more: true });
+          buildScreen(currentId, pageOffset + PAGE_STEP);
+        });
+        return;
+      }
+      var id = group.userData.id;
+      var kids = childrenOf[id] || [];
+      if (!kids.length) {
+        // Leaf page: buttonfly runs the action instantly with no flight
+        // when a button has no forward submenu - here that "action" is
+        // opening the real page, in a new tab so the button grid (and
+        // wherever you were in it) is still sitting right here after.
+        window.open('/page/' + encodeURIComponent(id), '_blank');
+        return;
+      }
+      animateButton(group, 'in', function () {
+        stack.push({ id: currentId, offset: pageOffset, more: false });
+        buildScreen(id, 0);
+      });
+    }
+
+    function flyBack() {
+      if (flying || !stack.length) return;
+      var leavingId = currentId;
+      var back = stack.pop();
+      var focusGroup = buildScreen(back.id, back.offset, back.more ? MORE_FOCUS_ID : leavingId);
+      if (focusGroup) {
+        animateButton(focusGroup, 'out', function () {
+          /* settled at rest already via the final step() call */
+        });
+      }
+    }
+
+    // --- Input: click a button to fly in; click empty space to fly back
+    // out (buttonfly's "click nothing = go up a menu").
+    var raycaster = new THREE.Raycaster();
+    var mouse = new THREE.Vector2();
+    var hovered = null;
+
+    function groupFromHit(hit) {
+      var obj = hit.object;
+      return obj.userData.buttonGroup || obj;
     }
 
     function onPointerDown(ev) {
@@ -503,37 +488,12 @@
       mouse.x = (ev.clientX / window.innerWidth) * 2 - 1;
       mouse.y = -(ev.clientY / window.innerHeight) * 2 + 1;
       raycaster.setFromCamera(mouse, camera);
-      var nodeHits = raycaster.intersectObjects(nodeMeshes);
-      if (nodeHits.length) {
-        selectMesh(nodeHits[0].object);
+      var hits = raycaster.intersectObjects(buttonGroups, true);
+      if (!hits.length) {
+        flyBack();
         return;
       }
-      var linkHits = raycaster.intersectObjects(linkGroup.children);
-      if (linkHits.length) {
-        var hit = linkHits[0];
-        var ud = hit.object.userData;
-        var name = nearerEndpoint(hit.point, ud);
-        var target = meshForName(name);
-        if (target) {
-          // Clicking the parent-side half of a link means "go up" - look
-          // back at the child we just came from, rather than the parent's
-          // own (possibly unrelated) average children direction, so moving
-          // up reads as looking back down at where you came from.
-          var lookDir = null;
-          if (name === ud.parentName) {
-            var pPos = positions[ud.parentName];
-            var cPos = positions[ud.childName];
-            if (pPos && cPos) {
-              lookDir = new THREE.Vector3(cPos.x - pPos.x, 0, cPos.z - pPos.z);
-              if (lookDir.lengthSq() < 1e-6) lookDir = null;
-              else lookDir.normalize();
-            }
-          }
-          selectMesh(target, true, lookDir);
-          return;
-        }
-      }
-      clearSelection();
+      flyInto(groupFromHit(hits[0]));
     }
     renderer.domElement.addEventListener('pointerdown', onPointerDown);
 
@@ -541,8 +501,14 @@
       mouse.x = (ev.clientX / window.innerWidth) * 2 - 1;
       mouse.y = -(ev.clientY / window.innerHeight) * 2 + 1;
       raycaster.setFromCamera(mouse, camera);
-      var hits = raycaster.intersectObjects(nodeMeshes).length || raycaster.intersectObjects(linkGroup.children).length;
-      renderer.domElement.style.cursor = hits ? 'pointer' : 'grab';
+      var hits = raycaster.intersectObjects(buttonGroups, true);
+      var group = hits.length ? groupFromHit(hits[0]) : null;
+      if (group !== hovered) {
+        if (hovered) hovered.userData.box.material = hovered.userData.normalMaterial;
+        if (group) group.userData.box.material = group.userData.hoverMaterial;
+        hovered = group;
+      }
+      renderer.domElement.style.cursor = group ? 'pointer' : 'default';
     }
     renderer.domElement.addEventListener('pointermove', onPointerMove);
 
@@ -552,16 +518,20 @@
       renderer.setSize(window.innerWidth, window.innerHeight);
     });
 
-    // Auto-select the root (downtown) on load, but keep the wide establishing
-    // shot rather than immediately flying the camera in.
-    var rootMesh = nodeMeshes.filter(function (m) { return m.userData.name === root; })[0];
-    if (rootMesh) selectMesh(rootMesh, false);
+    buildScreen(root, 0);
 
-    (function animate() {
+    (function animate(now) {
       requestAnimationFrame(animate);
-      if (cameraAnim) cameraAnim(performance.now());
-      controls.update();
+      if (flying) {
+        var t = Math.min((now - flying.start) / FLY_MS, 1);
+        flying.step(t);
+        if (t >= 1) {
+          var done = flying.onDone;
+          flying = null;
+          if (done) done();
+        }
+      }
       renderer.render(scene, camera);
-    })();
+    })(performance.now());
   }
 })();

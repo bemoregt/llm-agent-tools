@@ -44,6 +44,7 @@
     .graph-hint {
       bottom: 12px;
       left: 16px;
+      max-width: calc(100vw - 260px);
       font-size: 0.8em;
       line-height: 1.6;
       background: rgba(0,0,0,0.4);
@@ -57,47 +58,6 @@
       transform: translate(-50%, -50%);
       font-size: 1em;
     }
-
-    .graph-panel {
-      top: 56px;
-      right: 16px;
-      width: 260px;
-      background: rgba(0,0,0,0.7);
-      border: 1px solid #ffffff;
-      padding: 12px 14px;
-      display: none;
-    }
-    .graph-panel.visible { display: block; }
-    .graph-panel .panel-title {
-      font-size: 1.05em;
-      font-weight: bold;
-      margin: 0 0 8px;
-      word-break: break-all;
-    }
-    .graph-panel .panel-meta {
-      font-size: 0.8em;
-      color: #cccccc;
-      margin: 0 0 10px;
-    }
-    .graph-panel .panel-buttons {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 6px;
-    }
-    .graph-panel a.btn, .graph-panel button.btn {
-      display: inline-block;
-      color: #111111;
-      background: #ffffff;
-      text-decoration: none;
-      font-weight: bold;
-      font-family: inherit;
-      font-size: 0.85em;
-      padding: 5px 10px;
-      border: none;
-      cursor: pointer;
-    }
-    .graph-panel a.btn:hover, .graph-panel button.btn:hover { background: #e0e0e0; }
-    .graph-panel button.btn:disabled { color: #888888; background: #cccccc; cursor: default; }
   </style>
 </head>
 <body>
@@ -110,24 +70,12 @@
   </div>
 
   <div class="graph-overlay graph-hint">
-    드래그: 회전 &nbsp;|&nbsp; 스크롤: 확대/축소 &nbsp;|&nbsp; 우클릭 드래그: 이동<br>
-    노드/링크 클릭: 선택 + 조명 켜기 &nbsp;|&nbsp; B키/◀이전 버튼: 이전 노드로 &nbsp;|&nbsp; ↓키/▲상위 버튼: 상위 노드로
+    버튼 클릭: 날아 들어가기(없으면 새 탭에서 열기) &nbsp;|&nbsp; 빈 곳 클릭: 뒤로
   </div>
 
   <div class="graph-overlay graph-status" id="graph-status">그래프를 불러오는 중...</div>
 
-  <div class="graph-overlay graph-panel" id="graph-panel">
-    <p class="panel-title" id="panel-title"></p>
-    <p class="panel-meta" id="panel-meta"></p>
-    <div class="panel-buttons">
-      <a class="btn" id="panel-open" href="#">페이지 열기</a>
-      <button type="button" class="btn" id="panel-back">◀ 이전</button>
-      <button type="button" class="btn" id="panel-up">▲ 상위</button>
-    </div>
-  </div>
-
   <script src="/static/vendor/three.min.js"></script>
-  <script src="/static/vendor/OrbitControls.js"></script>
   <script src="/static/graph.js"></script>
 </body>
 </html>
