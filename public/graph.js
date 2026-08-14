@@ -95,17 +95,18 @@
     // free-orbit 3D graph."
     var scene = new THREE.Scene();
 
-    // buttonfly's own clear color is a near-black (0.1, 0.1, 0.1) - a flat
-    // dark charcoal, not the navy this used to be, so a faint vertical
-    // gradient is all that's kept for depth cues.
+    // buttonfly's own clear color is a flat near-black (0.1, 0.1, 0.1), but
+    // a deep indigo/purple-blue reads more like the actual SGI hardware era
+    // this demo came from (the Indigo/Indigo2 workstations it's named
+    // after) - still dark enough to keep the pink buttons front and center.
     var skyCanvas = document.createElement('canvas');
     skyCanvas.width = 2;
     skyCanvas.height = 256;
     var skyCtx = skyCanvas.getContext('2d');
     var skyGradient = skyCtx.createLinearGradient(0, 0, 0, 256);
-    skyGradient.addColorStop(0, '#0d0d0d');
-    skyGradient.addColorStop(0.55, '#1a1a1a');
-    skyGradient.addColorStop(1, '#050505');
+    skyGradient.addColorStop(0, '#150c28');
+    skyGradient.addColorStop(0.55, '#1f1440');
+    skyGradient.addColorStop(1, '#0a0616');
     skyCtx.fillStyle = skyGradient;
     skyCtx.fillRect(0, 0, 2, 256);
     scene.background = new THREE.CanvasTexture(skyCanvas);
@@ -202,7 +203,7 @@
     function makeLabelTexture(text) {
       var c = document.createElement('canvas');
       var ctx = c.getContext('2d');
-      var fontPx = Math.round(LABEL_CANVAS_H * 0.24);
+      var fontPx = Math.round(LABEL_CANVAS_H * 0.192); // 20% smaller - the previous 0.24 ran text past the button's edge
       ctx.font = fontPx + 'px ' + LABEL_FONT;
       var maxWidth = LABEL_CANVAS_W;
       c.width = maxWidth;
