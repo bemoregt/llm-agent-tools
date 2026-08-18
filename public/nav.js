@@ -44,6 +44,44 @@
     });
   });
 
+  // Wiki-link text is selectable (see style.css) so a sentence containing a
+  // link can be copied whole. That reopens the problem the old
+  // `user-select: none` rule used to paper over: a tiny cursor drift while
+  // clicking (common on trackpads) makes the browser start a text selection
+  // instead of firing `click`, so the link silently fails to navigate. This
+  // restores that reliability without disabling selection: if the mouse
+  // moved between down and up but the drift didn't actually select any
+  // text, the native click never happens on its own, so it's forced here.
+  // A drift that *did* select real text is left alone so the user can copy it.
+  (function () {
+    var linkSelector = '.page-body a.wikilink, .page-body a.wikilink-new';
+    var down = null;
+
+    document.addEventListener('mousedown', function (e) {
+      var link = e.target.closest(linkSelector);
+      down = link ? { link: link, clicked: false } : null;
+    });
+
+    // Capture phase so this always sees the click before other listeners
+    // (e.g. the pushCurrent one above) get a chance to run/return early.
+    document.addEventListener('click', function (e) {
+      if (down && e.target.closest(linkSelector) === down.link) down.clicked = true;
+    }, true);
+
+    document.addEventListener('mouseup', function (e) {
+      var info = down;
+      if (!info || e.target.closest(linkSelector) !== info.link) { down = null; return; }
+      var sel = window.getSelection();
+      var hasSelection = !!sel && sel.toString().length > 0;
+      // Deferred: a genuine click fires synchronously right after mouseup,
+      // so by the time this runs, info.clicked already reflects whether it did.
+      setTimeout(function () {
+        if (!hasSelection && !info.clicked) info.link.click();
+        down = null;
+      }, 0);
+    });
+  })();
+
   document.querySelectorAll('.sidebar a').forEach(function (a) {
     if (a.closest('.page-mode-actions')) return;
     a.addEventListener('click', pushCurrent);

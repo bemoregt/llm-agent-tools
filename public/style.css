@@ -494,16 +494,11 @@ pre.mermaid {
 .ipynb-error { background: #fdecea; color: #b71c1c; }
 .ipynb-result { background: #f5f5f5; }
 
-/* A tiny cursor drift while clicking (common on trackpads) makes the browser
-   start a text selection instead of registering the click, since the link's
-   own characters are selectable text - the dashed underline below them isn't,
-   so clicks there always land as a real click. Disabling selection on the
-   link itself removes that gap: any click on the label now always navigates. */
-a.wikilink, a.wikilink-new {
-  -webkit-user-select: none;
-  user-select: none;
-}
-
+/* Link text stays selectable (needed so dragging across a sentence that
+   contains a link copies the link's own words too, not just the text around
+   it) - the trackpad click-drift problem this used to fix via
+   `user-select: none` is instead handled in nav.js, which forces navigation
+   through on mouseup whenever the drift produced no real selection. */
 a.wikilink { color: #0000cc; text-decoration: underline; }
 
 a.external-link { color: #006622; text-decoration: none; }
