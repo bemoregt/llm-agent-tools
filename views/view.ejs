@@ -132,6 +132,15 @@
     <p class="side-hint" id="webcapture-status"></p>
   </div>
 
+  <div class="torrentdownload-bar">
+    <button type="button" id="torrentdownload-btn" class="btn">🧲 토런트 다운로드</button>
+    <p class="side-hint" id="torrentdownload-status"></p>
+    <div class="torrentdownload-progress" id="torrentdownload-progress" style="display:none">
+      <div class="torrentdownload-bar-track"><div class="torrentdownload-bar-fill" id="torrentdownload-bar-fill"></div></div>
+      <p class="side-hint" id="torrentdownload-progress-text"></p>
+    </div>
+  </div>
+
   <div class="page-footer-nav">
     <a class="btn" id="up-btn" style="display:none"></a>
   </div>
@@ -159,6 +168,7 @@
   <script src="/static/vrmlmaker.js"></script>
   <script src="/static/rainphoto.js"></script>
   <script src="/static/webcapture.js"></script>
+  <script src="/static/torrentdownload.js"></script>
   <% if (html.includes('class="mermaid"')) { %>
     <script src="/static/vendor/mermaid.min.js"></script>
     <script>mermaid.initialize({ startOnLoad: true });</script>

@@ -18,6 +18,7 @@ const notebook = require('./lib/notebook');
 const kernel = require('./lib/kernel');
 const vrml = require('./lib/vrml');
 const screenshot = require('./lib/screenshot');
+const torrent = require('./lib/torrent');
 
 const rssParser = new RSSParser();
 
@@ -1715,6 +1716,149 @@ app.post('/page/:name/download-shorts', requireIndexAuth, async (req, res) => {
     res.json({ ok: true, videoUrl: `/uploads/${encodeURIComponent(outFilename)}` });
   } catch (err) {
     console.error('[download-shorts] error', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Extracts the names of every .torrent file this page links to via an upload
+// link (`[...](/uploads/xxx.torrent)` and image forms alike), decoding the
+// percent-encoding the upload snippet uses, and returns only files that
+// actually exist in the uploads dir.
+function findPageTorrents(body) {
+  const names = new Set();
+  const re = /\/uploads\/([^\s\]"'<>]+?\.torrent)(?=[)\s\]"'<>]|$)/gi;
+  let m;
+  while ((m = re.exec(body))) {
+    try {
+      const base = path.basename(decodeURIComponent(m[1]));
+      if (base.endsWith('.torrent') && fs.existsSync(path.join(UPLOAD_DIR, base))) {
+        names.add(base);
+      }
+    } catch (e) {
+      /* skip malformed */
+    }
+  }
+  return [...names];
+}
+
+function formatBytes(n) {
+  if (!Number.isFinite(n) || n <= 0) return '';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let i = 0;
+  let v = n;
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024;
+    i += 1;
+  }
+  return `${v.toFixed(v >= 10 || i === 0 ? 0 : 1)} ${units[i]}`;
+}
+
+const TORRENT_TIMEOUT_MS = parseInt(process.env.TORRENT_TIMEOUT_MS || String(30 * 60 * 1000), 10);
+
+// Live per-page download state, written while a torrent is being fetched and
+// read by GET /api/torrent-progress/:name so the page can draw a progress bar.
+const torrentProgress = {};
+
+function setTorrentProgress(name, data) {
+  torrentProgress[name] = { updatedAt: Date.now(), ...data };
+}
+
+app.get('/api/torrent-progress/:name', (req, res) => {
+  const { name } = req.params;
+  res.json(torrentProgress[name] || { status: 'idle' });
+});
+
+// "토런트 다운로드": takes every .torrent file the user attached to this
+// page, reads the largest file out of each over actual BitTorrent/WebTorrent
+// peer-to-peer connections (works whether the .torrent came from a legal
+// source like Internet Archive or LibreTorrent or was made by hand), live
+// progress while downloading, and attaches the finished files to the page
+// like any other upload.
+app.post('/page/:name/torrent-download', requireIndexAuth, async (req, res) => {
+  try {
+    const { name } = req.params;
+    if (!wiki.pageExists(name)) return res.status(404).json({ error: 'page not found' });
+
+    const { body } = wiki.readPage(name);
+    const torrentNames = findPageTorrents(body);
+    if (!torrentNames.length) {
+      return res.status(400).json({ error: '이 문서에 첨부된 .torrent 파일이 없습니다. (업로드 링크로 .torrent 파일을 먼저 추가해주세요.)' });
+    }
+
+    const results = [];
+    for (const torrentName of torrentNames) {
+      try {
+        const torrentPath = path.join(UPLOAD_DIR, torrentName);
+        setTorrentProgress(name, { status: 'preparing', torrent: torrentName, message: `토런트 분석 중: ${torrentName}` });
+
+        const info = torrent.inspectTorrent(torrentPath);
+        const files = Array.isArray(info.files) ? info.files : [];
+        if (!files.length) throw new Error('파일 목록을 읽지 못했습니다.');
+
+        let idx = 0;
+        for (let i = 0; i < files.length; i += 1) {
+          if ((files[i].length || 0) > (files[idx].length || 0)) idx = i;
+        }
+        const target = files[idx].name || `file-${idx}`;
+
+        const outDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wiki-torrent-'));
+        let attached = [];
+        try {
+          const downloadedPaths = await torrent.downloadFile({
+            torrentPath,
+            outDir,
+            fileIndex: idx,
+            timeoutMs: TORRENT_TIMEOUT_MS,
+            onProgress: (p) => {
+              setTorrentProgress(name, {
+                status: p.phase === 'done' ? 'finalizing' : 'downloading',
+                torrent: torrentName,
+                fileName: p.fileName,
+                length: p.length,
+                downloaded: p.downloaded,
+                speed: p.speed,
+                peers: p.peers,
+                percent: p.percent,
+              });
+            },
+          });
+          setTorrentProgress(name, { status: 'copying', torrent: torrentName, message: `파일 저장 중: ${target}` });
+          for (const srcPath of downloadedPaths) {
+            const finalName = uniqueUploadFilename(path.basename(srcPath));
+            fs.copyFileSync(srcPath, path.join(UPLOAD_DIR, finalName));
+            attached.push(finalName);
+          }
+        } finally {
+          fs.rmSync(outDir, { recursive: true, force: true });
+        }
+
+        results.push({ torrent: torrentName, file: target, size: files[idx].length, attached });
+      } catch (err) {
+        console.error('[torrent-download] failed for', torrentName, err.message);
+        results.push({ torrent: torrentName, error: err.message });
+      }
+    }
+
+    const caption = new Date().toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' });
+    const lines = ['', '## 🧲 토런트 다운로드', ''];
+    for (const r of results) {
+      if (r.error) {
+        lines.push(`- ❌ ${r.torrent} — ${r.error}`);
+      } else {
+        lines.push(`- 🗂️ ${r.file}${formatBytes(r.size) ? ` (${formatBytes(r.size)})` : ''}`);
+        for (const f of r.attached) {
+          lines.push(`  - [다운로드받은 파일: ${f}](/uploads/${encodeURIComponent(f)})`);
+        }
+      }
+    }
+    lines.push(`- ⏱️ ${caption} 기준`);
+    appendToPage(name, lines.join('\n'));
+
+    setTorrentProgress(name, { status: 'done', torrent: torrentNames.join(', '), message: '완료' });
+    res.json({ ok: true, results });
+  } catch (err) {
+    console.error('[torrent-download] error', err);
+    setTorrentProgress(name, { status: 'error', message: err.message });
     res.status(500).json({ error: err.message });
   }
 });
